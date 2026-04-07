@@ -1,5 +1,6 @@
 from __future__ import annotations
 from typing import Iterator
+import json
 import torch
 from torch import nn
 import torch.nn.functional as F
@@ -42,8 +43,9 @@ class CharTokenizer:
         return "".join(strs)
 
     def save(self, path: str) -> None:
-        # TODO: save it.
-        ...
+        with open(path, "w") as file:
+            data = {"vocab": self.vocab}
+            json.dump(data, file)
 
     @staticmethod
     def load(path: str) -> CharTokenizer:
@@ -67,7 +69,7 @@ class RandomOrderDataIterator:
 # This both creates the tokenizer and uses it to tokenize the data.
 # In a real system you'd like to split it to two separate functions.
 # Feel free to separate it to two functions also in this code.
-def load_data(path: str) -> [CharTokenizer, list[list[int]]]:
+def load_data(path: str) -> tuple[CharTokenizer, list[list[int]]]:
     tokenizer = CharTokenizer()
     for fname in glob.glob(f"{path}/*.txt"):
         with open(fname) as fh:

@@ -53,7 +53,7 @@ if __name__ == "__main__":
 
             logits = model(batch_x)
 
-            loss = lm.compute_loss(logits, batch_y)
+            loss = lm.compute_loss(logits, batch_y, pad_id=tokenizer.pad_id())
 
             # parameters update
             model.zero_grad()
