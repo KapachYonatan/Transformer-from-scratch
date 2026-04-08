@@ -5,12 +5,13 @@ import attention
 import mlp
 
 class TransformerDecoderBlock(nn.Module):
-    def __init__(self, n_heads: int, embed_size: int, mlp_hidden_size: int, max_context_len, with_residuals: bool = False, use_pre_norm: bool = True):
+    def __init__(self, n_heads: int, embed_size: int, mlp_hidden_size: int, max_context_len, with_residuals: bool = False, use_pre_norm: bool = True, attention_dropout: float = 0.0, self_attention_dropout: float = 0.0):
         super().__init__()
-        self.causal_attention = attention.CausalSelfAttention(embed_size, n_heads, max_context_len)
+        self.causal_attention = attention.CausalSelfAttention(embed_size, n_heads, max_context_len, attention_dropout=attention_dropout)
         self.mlp = mlp.MLP(embed_size, mlp_hidden_size)
         self.layer_norm_1 = nn.LayerNorm(embed_size)
         self.layer_norm_2 = nn.LayerNorm(embed_size)
+        self.self_attention_dropout = nn.Dropout(self_attention_dropout)
         self.with_residuals = with_residuals
         self.use_pre_norm = use_pre_norm
 
@@ -18,19 +19,20 @@ class TransformerDecoderBlock(nn.Module):
         x = inputs
         if self.use_pre_norm:
             # PRE-NORM LOGIC
-            x = x + self.causal_attention(self.layer_norm_1(x))
+            x = x + self.self_attention_dropout(self.causal_attention(self.layer_norm_1(x)))
             x = x + self.mlp(self.layer_norm_2(x))
         else:
             # POST-NORM LOGIC
-            x = self.layer_norm_1(x + self.causal_attention(x))
+            x = self.layer_norm_1(x + self.self_attention_dropout(self.causal_attention(x)))
             x = self.layer_norm_2(x + self.mlp(x))
         return x
 
 class Embed(nn.Module):
-    def __init__(self, vocab_size: int, embed_size: int, max_context_len):
+    def __init__(self, vocab_size: int, embed_size: int, max_context_len, embedding_dropout: float = 0.0):
         super().__init__()
         self.token_embeddings = nn.Embedding(vocab_size, embed_size)
         self.position_embeddings = nn.Embedding(max_context_len, embed_size)
+        self.dropout = nn.Dropout(embedding_dropout)
         self.max_context_len = max_context_len
 
     def forward(self, x):
@@ -40,7 +42,7 @@ class Embed(nn.Module):
         tok_embeddings = self.token_embeddings(x)
         positions = torch.arange(n, device=x.device)
         pos_embeddings = self.position_embeddings(positions)
-        return tok_embeddings + pos_embeddings
+        return self.dropout(tok_embeddings + pos_embeddings)
 
 
 class TransformerLM(nn.Module):
@@ -53,10 +55,28 @@ class TransformerLM(nn.Module):
             vocab_size: int,
             mlp_hidden_size: int,
             with_residuals: bool,
+            use_pre_norm: bool = True,
+            init_scheme: str = "xavier_uniform",
+            embedding_dropout: float = 0.0,
+            attention_dropout: float = 0.0,
+            self_attention_dropout: float = 0.0,
             ):
         super().__init__()
-        self.embed = Embed(vocab_size, embed_size, max_context_len)
-        self.layers = nn.ModuleList([TransformerDecoderBlock(n_heads, embed_size, mlp_hidden_size, max_context_len, with_residuals) for _ in range(n_layers)])
+        self.init_scheme = init_scheme
+        self.embed = Embed(vocab_size, embed_size, max_context_len, embedding_dropout=embedding_dropout)
+        self.layers = nn.ModuleList([
+            TransformerDecoderBlock(
+                n_heads,
+                embed_size,
+                mlp_hidden_size,
+                max_context_len,
+                with_residuals,
+                use_pre_norm=use_pre_norm,
+                attention_dropout=attention_dropout,
+                self_attention_dropout=self_attention_dropout,
+            )
+            for _ in range(n_layers)
+        ])
         self.layer_norm = nn.LayerNorm(embed_size)
         self.word_prediction = nn.Linear(embed_size, vocab_size)
         self.max_context_len = max_context_len
@@ -75,22 +95,27 @@ class TransformerLM(nn.Module):
         return logits
 
     def init_weights(self):
-        # initialize weights
-        # TODO implement initialization logic for embeddings and linear layers.
-        # The code break down the parameters by type (layer-norm, linear, embedding),
-        # but can also condition on individual names, for example by checking pn.endswith(...).
-        for pn, p in self.named_parameters():
-            if isinstance(p, nn.LayerNorm):
-                torch.nn.init.zeros_(p.bias)
-                torch.nn.init.ones_(p.weight)
-            elif isinstance(p, nn.Linear):
-                # TODO initialize p.weight and p.bias (if it is not None).
-                # You can look at initializers in torch.nn.init
-                pass
-            elif isinstance(p, nn.Embedding):
-                # TODO initialize p.weight and p.bias (if it is not None).
-                # You can look at initializers in torch.nn.init
-                pass
+        for module in self.modules():
+            if isinstance(module, nn.LayerNorm):
+                torch.nn.init.ones_(module.weight)
+                torch.nn.init.zeros_(module.bias)
+            elif isinstance(module, nn.Linear):
+                if self.init_scheme == "xavier_uniform":
+                    torch.nn.init.xavier_uniform_(module.weight)
+                elif self.init_scheme == "kaiming_normal":
+                    torch.nn.init.kaiming_normal_(module.weight, nonlinearity="linear")
+                elif self.init_scheme == "normal_0p02":
+                    torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+                else:
+                    raise ValueError(f"Unsupported init_scheme: {self.init_scheme}")
+
+                if module.bias is not None:
+                    torch.nn.init.zeros_(module.bias)
+            elif isinstance(module, nn.Embedding):
+                if self.init_scheme in {"xavier_uniform", "kaiming_normal", "normal_0p02"}:
+                    torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+                else:
+                    raise ValueError(f"Unsupported init_scheme: {self.init_scheme}")
 
 
     def sample_continuation(self, prefix: list[int], max_tokens_to_generate: int) -> list[int]:

@@ -1,6 +1,11 @@
 import torch
 import math
+import tempfile
+from pathlib import Path
+
 import attention
+import data
+import main
 
 def test_attention_scores():
     q = torch.arange(8, dtype=torch.float32).reshape(1, 2, 4)
@@ -75,3 +80,79 @@ def test_multi_head_attention_layer():
 
     assert result.shape == (b, n, d)
     print("test_multi_head_attention_layer passed")
+
+
+def test_run_experiment_tiny_configs():
+    # Build a tiny one-document corpus so run_experiment takes the single-sequence split path.
+    tokenizer = data.CharTokenizer()
+    text = "hello world! " * 40
+    tokenizer.train([text])
+    tokenized_data = [tokenizer.tokenize(text)]
+
+    experiments = [
+        {
+            "exp_name": "tiny_deep_narrow",
+            "seq_len": 8,
+            "batch_size": 2,
+            "n_layers": 2,
+            "n_heads": 2,
+            "embed_size": 16,
+            "mlp_hidden_size": 32,
+            "learning_rate": 1e-3,
+            "gradient_clipping": 1.0,
+            "num_batches_to_train": 2,
+            "val_interval": 1,
+            "with_residuals": True,
+            "use_pre_norm": True,
+            "init_scheme": "xavier_uniform",
+            "weight_decay": 0.0,
+            "embedding_dropout": 0.05,
+            "attention_dropout": 0.05,
+            "self_attention_dropout": 0.1,
+            "scheduler_type": "none",
+        },
+        {
+            "exp_name": "tiny_shallow_wide",
+            "seq_len": 8,
+            "batch_size": 2,
+            "n_layers": 1,
+            "n_heads": 2,
+            "embed_size": 20,
+            "mlp_hidden_size": 40,
+            "learning_rate": 8e-4,
+            "gradient_clipping": 1.0,
+            "num_batches_to_train": 2,
+            "val_interval": 1,
+            "with_residuals": True,
+            "use_pre_norm": False,
+            "init_scheme": "normal_0p02",
+            "weight_decay": 0.01,
+            "embedding_dropout": 0.1,
+            "attention_dropout": 0.0,
+            "self_attention_dropout": 0.05,
+            "scheduler_type": "linear",
+            "warmup_steps": 1,
+        },
+    ]
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        for config in experiments:
+            best_val_loss = main.run_experiment(
+                config,
+                tokenizer,
+                tokenized_data,
+                base_save_path=tmpdir,
+            )
+
+            assert isinstance(best_val_loss, float)
+            assert math.isfinite(best_val_loss)
+
+            exp_dir = Path(tmpdir) / config["exp_name"]
+            assert (exp_dir / "config.json").exists()
+            assert (exp_dir / "best_model.pth").exists()
+            assert (exp_dir / "last_checkpoint.pth").exists()
+            assert (exp_dir / "loss_plot.png").exists()
+            assert (exp_dir / "tokenizer.json").exists()
+
+    print("test_run_experiment_tiny_configs passed")
+test_run_experiment_tiny_configs()

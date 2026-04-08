@@ -34,7 +34,7 @@ def create_causal_mask(max_length: int):
     mask = mask.unsqueeze(0)
     return mask
 
-def self_attention(v, attention_scores, mask = None):
+def self_attention(v, attention_scores, mask = None, dropout_p: float = 0.0, training: bool = False):
     # Apply optional causal mask, then softmax and weighted sum.
     if mask is not None:
         n_q = attention_scores.size(-2)
@@ -43,33 +43,36 @@ def self_attention(v, attention_scores, mask = None):
         attention_scores = attention_scores.masked_fill(sliced_mask == 0, float("-inf"))
 
     weights = F.softmax(attention_scores, dim=-1)
+    if dropout_p > 0.0:
+        weights = F.dropout(weights, p=dropout_p, training=training)
     sa = weights @ v
     return sa
 
 
-def self_attention_layer(x, kqv_matrix, attention_mask):
+def self_attention_layer(x, kqv_matrix, attention_mask, attention_dropout: float = 0.0, training: bool = False):
     k, q, v = kqv(x, kqv_matrix)
     att = attention_scores(q, k)
-    sa = self_attention(v, att, attention_mask)
+    sa = self_attention(v, att, attention_mask, dropout_p=attention_dropout, training=training)
     return sa
 
-def multi_head_attention_layer(x, kqv_matrices, mask):
+def multi_head_attention_layer(x, kqv_matrices, mask, attention_dropout: float = 0.0, training: bool = False):
     head_outputs = []
     for matrix in kqv_matrices:
-        head_outputs.append(self_attention_layer(x, matrix, mask))
+        head_outputs.append(self_attention_layer(x, matrix, mask, attention_dropout=attention_dropout, training=training))
 
     sa = torch.cat(head_outputs, dim=-1)
     return sa
 
 
 class CausalSelfAttention(nn.Module):
-    def __init__(self, embed_dim, n_heads, max_context_len):
+    def __init__(self, embed_dim, n_heads, max_context_len, attention_dropout: float = 0.0):
         super().__init__()
         assert embed_dim % n_heads == 0
         # the linear layers used for k, q, v computations:
         # each linear is for a different head, but for all of k, q and v for this head.
         self.kqv_matrices = nn.ModuleList([create_kqv_matrix(embed_dim, n_heads) for i in range(n_heads)])
         self.o_matrix = nn.Linear(embed_dim, embed_dim)
+        self.attention_dropout_p = attention_dropout
         # For use in the causal part.  "register_buffer" is used to store a tensor which is fixed but is not a parameter of the model.
         # You can then access it with: self.mask
         mask = create_causal_mask(max_context_len)
@@ -78,6 +81,6 @@ class CausalSelfAttention(nn.Module):
         self.embed_dim = embed_dim
 
     def forward(self, x):
-        sa = multi_head_attention_layer(x, self.kqv_matrices, self.mask)
+        sa = multi_head_attention_layer(x, self.kqv_matrices, self.mask, attention_dropout=self.attention_dropout_p, training=self.training)
         sa = self.o_matrix(sa)
         return sa

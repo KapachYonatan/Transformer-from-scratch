@@ -50,7 +50,11 @@ class CharTokenizer:
     @staticmethod
     def load(path: str) -> CharTokenizer:
         tokenizer = CharTokenizer()
-        # TODO: load it.
+        with open(path, "r") as file:
+            loaded_data = json.load(file)
+        tokenizer.vocab = loaded_data["vocab"]
+        tokenizer.stoi = {s: i for i, s in enumerate(tokenizer.vocab)}
+        tokenizer.tokens = set(tokenizer.vocab[1:])
         return tokenizer
 
 class RandomOrderDataIterator:
