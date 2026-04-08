@@ -13,7 +13,7 @@ import data
 import lm
 from transformer import TransformerLM
 
-def run_experiment(config: dict, base_data_path: str, tokenizer, tokenized_data, base_save_path: str = "experiments"):
+def run_experiment(config: dict, tokenizer, tokenized_data, base_save_path: str = "experiments"):
     seq_len = config["seq_len"]
     batch_size = config["batch_size"]
     n_layers = config["n_layers"]
