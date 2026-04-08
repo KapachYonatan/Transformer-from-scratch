@@ -151,7 +151,10 @@ def run_experiment(config: dict, tokenizer, tokenized_data, base_save_path: str 
     experiment_start_time = time.perf_counter()
 
     print(f"Entering training loop for {num_batches_to_train} batches...", flush=True)
-    print("Model successfully moved to GPU. Starting training loop...", flush=True)
+    if device.type == "cuda":
+        print("Model successfully moved to GPU. Starting training loop...", flush=True)
+    else:
+        print("Model running on CPU. Starting training loop...", flush=True)
     last_log_time = time.perf_counter()
     last_log_batches = 0
 
@@ -224,6 +227,7 @@ def run_experiment(config: dict, tokenizer, tokenized_data, base_save_path: str 
                         val_loss_values.append(val_loss.item())
 
                 avg_val_loss = sum(val_loss_values) / len(val_loss_values)
+                print(f"Validation loss at batch {num_batches}: {avg_val_loss:.4f}", flush=True)
                 train_losses.append(loss.item())
                 val_losses.append(avg_val_loss)
                 val_steps.append(num_batches)
@@ -256,6 +260,8 @@ def run_experiment(config: dict, tokenizer, tokenized_data, base_save_path: str 
                 )
 
                 model.train()
+                last_log_time = time.perf_counter()
+                last_log_batches = num_batches
 
         if not saw_batch:
             raise ValueError(
