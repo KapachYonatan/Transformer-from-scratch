@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -12,7 +13,7 @@ import data
 import lm
 from transformer import TransformerLM
 
-def run_experiment(config: dict, base_data_path: str, base_save_path: str = "experiments"):
+def run_experiment(config: dict, base_data_path: str, tokenizer, tokenized_data, base_save_path: str = "experiments"):
     seq_len = config["seq_len"]
     batch_size = config["batch_size"]
     n_layers = config["n_layers"]
@@ -25,13 +26,13 @@ def run_experiment(config: dict, base_data_path: str, base_save_path: str = "exp
     with_residuals = config.get("with_residuals", True)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Initializing experiment: {config['exp_name']} on {device}...", flush=True)
     exp_dir = Path(base_save_path) / config["exp_name"]
     exp_dir.mkdir(parents=True, exist_ok=True)
 
     with open(exp_dir / "config.json", "w") as f:
         json.dump(config, f, indent=4)
 
-    tokenizer, tokenized_data = data.load_data(base_data_path)
     n_total = len(tokenized_data)
     n_train = int(0.8 * n_total)
     n_val = int(0.1 * n_total)
@@ -45,6 +46,7 @@ def run_experiment(config: dict, base_data_path: str, base_save_path: str = "exp
     data_iter = iter(data.RandomOrderDataIterator(train_data, seq_len + 1))
     val_iter = iter(data.RandomOrderDataIterator(val_data, seq_len + 1))
 
+    print("Constructing Transformer model architecture...", flush=True)
     model: torch.nn.Module = TransformerLM(
         n_layers,
         n_heads,
@@ -64,6 +66,10 @@ def run_experiment(config: dict, base_data_path: str, base_save_path: str = "exp
     val_steps = []
     best_val_loss = float("inf")
 
+    print(f"Entering training loop for {num_batches_to_train} batches...", flush=True)
+    last_log_time = time.perf_counter()
+    last_log_batches = 0
+
     num_batches = 0
     while num_batches < num_batches_to_train:
         # Refresh the iterator every time we finish the data
@@ -72,7 +78,7 @@ def run_experiment(config: dict, base_data_path: str, base_save_path: str = "exp
         for batch in data.batch_items(data_iter, batch_size):
             if num_batches >= num_batches_to_train:
                 break
-            num_batches = num_batches + 1
+            num_batches += 1
 
             batch_x, batch_y = lm.batch_to_labeled_samples(batch)
             batch_x, batch_y = batch_x.to(device), batch_y.to(device)
@@ -88,18 +94,30 @@ def run_experiment(config: dict, base_data_path: str, base_save_path: str = "exp
             optimizer.step()
 
             if num_batches % 10 == 0:
-                print(f"Seen {num_batches} batches. last loss is: {loss.item()}")
-                if num_batches % 100 == 0:
+                current_time = time.perf_counter()
+                elapsed = max(current_time - last_log_time, 1e-12)
+                batches_per_sec = (num_batches - last_log_batches) / elapsed
+                print(
+                    f"Seen {num_batches} batches. last loss is: {loss.item():.4f}. speed: {batches_per_sec:.2f} batches/sec",
+                    flush=True,
+                )
+                last_log_time = current_time
+                last_log_batches = num_batches
+
+                if num_batches != 0 and num_batches % 100 == 0:
+                    print("Generating qualitative sample...", flush=True)
                     for _ in range(1):
                         model.eval()
                         sampled = tokenizer.detokenize(
                             model.sample_continuation(tokenizer.tokenize("Hello"), 500)
                         )
                         model.train()
-                        print(f"Model sample: '''{sampled}'''")
-                    print("")
+                        print(f"Model sample: '''{sampled}'''", flush=True)
+                    print("Sample generation complete.", flush=True)
+                    print("", flush=True)
 
             if num_batches % config["val_interval"] == 0:
+                print("Starting validation on 50 batches...", flush=True)
                 model.eval()
                 val_loss_values = []
                 with torch.no_grad():
@@ -141,6 +159,17 @@ def run_experiment(config: dict, base_data_path: str, base_save_path: str = "exp
 
 if __name__ == "__main__":
     DATA_PATH = "../data/en/"
+    tokenized_data_path = Path("tokenized_data.pth")
+    tokenizer_path = Path("tokenizer.json")
+
+    if tokenized_data_path.exists():
+        tokenized_data = torch.load(tokenized_data_path)
+        tokenizer = data.CharTokenizer.load(str(tokenizer_path))
+    else:
+        tokenizer, tokenized_data = data.load_data(DATA_PATH)
+        torch.save(tokenized_data, tokenized_data_path)
+        tokenizer.save(str(tokenizer_path))
+
     experiments = [
         {
             "exp_name": "deep_narrow",
@@ -171,6 +200,6 @@ if __name__ == "__main__":
     ]
 
     for config in experiments:
-        best_val_loss = run_experiment(config, DATA_PATH)
+        best_val_loss = run_experiment(config, DATA_PATH, tokenizer, tokenized_data)
         print(f"Experiment {config['exp_name']} best validation loss: {best_val_loss:.4f}")
         torch.cuda.empty_cache()

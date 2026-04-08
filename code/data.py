@@ -70,17 +70,30 @@ class RandomOrderDataIterator:
 # In a real system you'd like to split it to two separate functions.
 # Feel free to separate it to two functions also in this code.
 def load_data(path: str) -> tuple[CharTokenizer, list[list[int]]]:
+    print(f"Starting data loading from {path}...", flush=True)
     tokenizer = CharTokenizer()
-    for fname in glob.glob(f"{path}/*.txt"):
+    file_names = glob.glob(f"{path}/*.txt")
+    total_characters = 0
+    loaded_documents = 0
+
+    for fname in file_names:
+        print(f"Tokenizing file: {fname}...", flush=True)
         with open(fname) as fh:
             text = fh.read()
+            total_characters += len(text)
+            loaded_documents += 1
             tokenizer.train(text)
 
     data: list[list[int]] = []
-    for fname in glob.glob(f"{path}/*.txt"):
+    for fname in file_names:
         with open(fname) as fh:
             text = fh.read()
             data.append(tokenizer.tokenize(text))
+
+    print(
+        f"Total documents loaded: {loaded_documents}. Total characters: {total_characters}.",
+        flush=True,
+    )
 
     return (tokenizer, data)
 
