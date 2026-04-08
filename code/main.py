@@ -34,12 +34,23 @@ def run_experiment(config: dict, tokenizer, tokenized_data, base_save_path: str 
         json.dump(config, f, indent=4)
 
     n_total = len(tokenized_data)
-    n_train = int(0.8 * n_total)
-    n_val = int(0.1 * n_total)
+    if n_total == 1:
+        full_seq = tokenized_data[0]
+        split = int(0.9 * len(full_seq))
+        train_data = [full_seq[:split]]
+        val_data = [full_seq[split:]]
+    else:
+        n_train = int(0.8 * n_total)
+        n_val = int(0.1 * n_total)
+        train_data = tokenized_data[:n_train]
+        val_data = tokenized_data[n_train:n_train + n_val]
 
-    train_data = tokenized_data[:n_train]
-    val_data = tokenized_data[n_train:n_train + n_val]
-    test_data = tokenized_data[n_train + n_val:]
+    train_tokens = sum(len(seq) for seq in train_data)
+    val_tokens = sum(len(seq) for seq in val_data)
+    print(f"Train tokens: {train_tokens}, Val tokens: {val_tokens}", flush=True)
+
+    if len(train_data) == 0:
+        raise ValueError("train_data is empty after splitting. Please provide more data or adjust the split.")
 
     # NOTE: are data items are longer by one than the sequence length,
     # They will be shortened by 1 when converted to training examples.
@@ -67,18 +78,24 @@ def run_experiment(config: dict, tokenizer, tokenized_data, base_save_path: str 
     best_val_loss = float("inf")
 
     print(f"Entering training loop for {num_batches_to_train} batches...", flush=True)
+    print("Model successfully moved to GPU. Starting training loop...", flush=True)
     last_log_time = time.perf_counter()
     last_log_batches = 0
 
     num_batches = 0
     while num_batches < num_batches_to_train:
-        # Refresh the iterator every time we finish the data
+        # Refresh the iterator each epoch so training can continue for multiple epochs.
         data_iter = iter(data.RandomOrderDataIterator(train_data, seq_len + 1))
+        saw_batch = False
 
         for batch in data.batch_items(data_iter, batch_size):
+            saw_batch = True
             if num_batches >= num_batches_to_train:
                 break
             num_batches += 1
+
+            if num_batches <= 5:
+                print(f"Batch [{num_batches}] reached", flush=True)
 
             batch_x, batch_y = lm.batch_to_labeled_samples(batch)
             batch_x, batch_y = batch_x.to(device), batch_y.to(device)
@@ -120,6 +137,7 @@ def run_experiment(config: dict, tokenizer, tokenized_data, base_save_path: str 
                 print("Starting validation on 50 batches...", flush=True)
                 model.eval()
                 val_loss_values = []
+                val_iter = iter(data.RandomOrderDataIterator(val_data, seq_len + 1))
                 with torch.no_grad():
                     for val_batch_idx, val_batch in enumerate(data.batch_items(val_iter, batch_size)):
                         if val_batch_idx >= 50:
@@ -140,6 +158,11 @@ def run_experiment(config: dict, tokenizer, tokenized_data, base_save_path: str 
                     torch.save(model.state_dict(), exp_dir / "best_model.pth")
 
                 model.train()
+
+        if not saw_batch:
+            raise ValueError(
+                "No training batches were produced. Ensure training sequences are longer than seq_len + 1."
+            )
 
     tokenizer.save(str(exp_dir / "tokenizer.json"))
 
@@ -200,6 +223,6 @@ if __name__ == "__main__":
     ]
 
     for config in experiments:
-        best_val_loss = run_experiment(config, DATA_PATH, tokenizer, tokenized_data)
-        print(f"Experiment {config['exp_name']} best validation loss: {best_val_loss:.4f}")
+        best_val_loss = run_experiment(config, tokenizer, tokenized_data)
+        print(f"Experiment {config['exp_name']} best validation loss: {best_val_loss:.4f}", flush=True)
         torch.cuda.empty_cache()
