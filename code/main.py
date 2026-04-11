@@ -50,6 +50,13 @@ def run_experiment(config: dict, tokenizer, tokenized_data, base_save_path: str 
     warmup_steps = config.get("warmup_steps", 0)
     min_lr_ratio = config.get("min_lr_ratio", 0.1)
     reset_scheduler_on_resume = config.get("reset_scheduler_on_resume", False)
+    early_stop_patience = config.get("early_stop_patience", None)
+    early_stop_delta = config.get("early_stop_delta", 0.0)
+
+    if early_stop_patience is not None and early_stop_patience < 1:
+        raise ValueError("early_stop_patience must be >= 1 when enabled.")
+    if early_stop_delta < 0:
+        raise ValueError("early_stop_delta must be >= 0.")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Initializing experiment: {config['exp_name']} on {device}...", flush=True)
@@ -148,6 +155,9 @@ def run_experiment(config: dict, tokenizer, tokenized_data, base_save_path: str 
     val_lrs = []
     best_val_loss = float("inf")
     best_step = -1
+    prev_val_loss = None
+    early_stop_counter = 0
+    should_stop_early = False
     experiment_start_time = time.perf_counter()
 
     print(f"Entering training loop for {num_batches_to_train} batches...", flush=True)
@@ -228,6 +238,51 @@ def run_experiment(config: dict, tokenizer, tokenized_data, base_save_path: str 
 
                 avg_val_loss = sum(val_loss_values) / len(val_loss_values)
                 print(f"Validation loss at batch {num_batches}: {avg_val_loss:.4f}", flush=True)
+
+                if prev_val_loss is None:
+                    print(
+                        "Validation baseline established (no previous validation point for delta comparison).",
+                        flush=True,
+                    )
+                else:
+                    val_change = avg_val_loss - prev_val_loss
+                    if val_change < 0:
+                        print(
+                            f"Validation improved by {abs(val_change):.6f} (prev={prev_val_loss:.4f} -> current={avg_val_loss:.4f}).",
+                            flush=True,
+                        )
+                    elif val_change > 0:
+                        print(
+                            f"Validation worsened by {val_change:.6f} (prev={prev_val_loss:.4f} -> current={avg_val_loss:.4f}).",
+                            flush=True,
+                        )
+                    else:
+                        print(
+                            f"Validation unchanged (prev={prev_val_loss:.4f} -> current={avg_val_loss:.4f}).",
+                            flush=True,
+                        )
+
+                    if early_stop_patience is not None:
+                        if avg_val_loss + early_stop_delta >= prev_val_loss:
+                            early_stop_counter += 1
+                            print(
+                                f"Early-stop worsening streak: {early_stop_counter}/{early_stop_patience} (delta threshold={early_stop_delta:.6f}).",
+                                flush=True,
+                            )
+                        else:
+                            if early_stop_counter > 0:
+                                print("Early-stop worsening streak reset to 0.", flush=True)
+                            early_stop_counter = 0
+
+                        if early_stop_counter >= early_stop_patience:
+                            should_stop_early = True
+                            print(
+                                f"Early stopping triggered at batch {num_batches}. "
+                                f"Validation worsened by at least {early_stop_delta:.6f} for "
+                                f"{early_stop_patience} consecutive validation checks.",
+                                flush=True,
+                            )
+
                 train_losses.append(loss.item())
                 val_losses.append(avg_val_loss)
                 val_steps.append(num_batches)
@@ -262,11 +317,18 @@ def run_experiment(config: dict, tokenizer, tokenized_data, base_save_path: str 
                 model.train()
                 last_log_time = time.perf_counter()
                 last_log_batches = num_batches
+                prev_val_loss = avg_val_loss
+
+                if should_stop_early:
+                    break
 
         if not saw_batch:
             raise ValueError(
                 "No training batches were produced. Ensure training sequences are longer than seq_len + 1."
             )
+
+        if should_stop_early:
+            break
 
     tokenizer.save(str(exp_dir / "tokenizer.json"))
 
@@ -327,6 +389,8 @@ if __name__ == "__main__":
         "attention_dropout": 0.0,
         "self_attention_dropout": 0.0,
         "scheduler_type": "none",
+        "early_stop_patience": None,
+        "early_stop_delta": 0.0,
     }
 
     experiments = build_experiments(
