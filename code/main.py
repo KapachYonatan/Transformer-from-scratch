@@ -50,9 +50,12 @@ def run_experiment(config: dict, tokenizer, tokenized_data, base_save_path: str 
     warmup_steps = config.get("warmup_steps", 0)
     min_lr_ratio = config.get("min_lr_ratio", 0.1)
     reset_scheduler_on_resume = config.get("reset_scheduler_on_resume", False)
+    sample_interval = config.get("sample_interval", 100)
     early_stop_patience = config.get("early_stop_patience", None)
     early_stop_delta = config.get("early_stop_delta", 0.0)
 
+    if sample_interval < 1:
+        raise ValueError("sample_interval must be >= 1.")
     if early_stop_patience is not None and early_stop_patience < 1:
         raise ValueError("early_stop_patience must be >= 1 when enabled.")
     if early_stop_delta < 0:
@@ -209,7 +212,7 @@ def run_experiment(config: dict, tokenizer, tokenized_data, base_save_path: str 
                 last_log_time = current_time
                 last_log_batches = num_batches
 
-                if num_batches != 0 and num_batches % 100 == 0:
+                if num_batches != 0 and num_batches % sample_interval == 0:
                     print("Generating qualitative sample...", flush=True)
                     for _ in range(1):
                         model.eval()
@@ -389,6 +392,7 @@ if __name__ == "__main__":
         "attention_dropout": 0.0,
         "self_attention_dropout": 0.0,
         "scheduler_type": "none",
+        "sample_interval": 100,
         "early_stop_patience": None,
         "early_stop_delta": 0.0,
     }
