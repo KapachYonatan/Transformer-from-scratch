@@ -266,23 +266,26 @@ def run_experiment(config: dict, tokenizer, tokenized_data, base_save_path: str 
                         )
 
                     if early_stop_patience is not None:
-                        if avg_val_loss + early_stop_delta >= prev_val_loss:
+                        best_val_before_update = best_val_loss
+                        if avg_val_loss + early_stop_delta >= best_val_before_update:
                             early_stop_counter += 1
                             print(
-                                f"Early-stop worsening streak: {early_stop_counter}/{early_stop_patience} (delta threshold={early_stop_delta:.6f}).",
+                                f"Early-stop no-improvement streak: {early_stop_counter}/{early_stop_patience} "
+                                f"(best={best_val_before_update:.4f}, current={avg_val_loss:.4f}, "
+                                f"delta threshold={early_stop_delta:.6f}).",
                                 flush=True,
                             )
                         else:
                             if early_stop_counter > 0:
-                                print("Early-stop worsening streak reset to 0.", flush=True)
+                                print("Early-stop no-improvement streak reset to 0.", flush=True)
                             early_stop_counter = 0
 
                         if early_stop_counter >= early_stop_patience:
                             should_stop_early = True
                             print(
                                 f"Early stopping triggered at batch {num_batches}. "
-                                f"Validation worsened by at least {early_stop_delta:.6f} for "
-                                f"{early_stop_patience} consecutive validation checks.",
+                                f"Validation did not beat best loss ({best_val_before_update:.4f}) by more than "
+                                f"{early_stop_delta:.6f} for {early_stop_patience} consecutive validation checks.",
                                 flush=True,
                             )
 
