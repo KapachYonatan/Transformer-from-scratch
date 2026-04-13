@@ -1,5 +1,6 @@
 import torch
 import math
+import json
 import tempfile
 from pathlib import Path
 
@@ -101,7 +102,7 @@ def test_run_experiment_tiny_configs():
             "learning_rate": 1e-3,
             "gradient_clipping": 1.0,
             "num_batches_to_train": 2,
-            "val_interval": 1,
+            "train_eval_interval": 1,
             "with_residuals": True,
             "use_pre_norm": True,
             "init_scheme": "xavier_uniform",
@@ -122,7 +123,7 @@ def test_run_experiment_tiny_configs():
             "learning_rate": 8e-4,
             "gradient_clipping": 1.0,
             "num_batches_to_train": 2,
-            "val_interval": 1,
+            "train_eval_interval": 1,
             "with_residuals": True,
             "use_pre_norm": False,
             "init_scheme": "normal_0p02",
@@ -137,15 +138,15 @@ def test_run_experiment_tiny_configs():
 
     with tempfile.TemporaryDirectory() as tmpdir:
         for config in experiments:
-            best_val_loss = main.run_experiment(
+            best_train_loss = main.run_experiment(
                 config,
                 tokenizer,
                 tokenized_data,
                 base_save_path=tmpdir,
             )
 
-            assert isinstance(best_val_loss, float)
-            assert math.isfinite(best_val_loss)
+            assert isinstance(best_train_loss, float)
+            assert math.isfinite(best_train_loss)
 
             exp_dir = Path(tmpdir) / config["exp_name"]
             assert (exp_dir / "config.json").exists()
@@ -153,6 +154,16 @@ def test_run_experiment_tiny_configs():
             assert (exp_dir / "last_checkpoint.pth").exists()
             assert (exp_dir / "loss_plot.png").exists()
             assert (exp_dir / "tokenizer.json").exists()
+
+            with open(exp_dir / "summary.json", "r") as summary_file:
+                summary = json.load(summary_file)
+            assert "best_train_loss" in summary
+            assert "best_val_loss" not in summary
+
+            with open(exp_dir / "metrics.jsonl", "r") as metrics_file:
+                first_metric = json.loads(metrics_file.readline())
+            assert "train_loss" in first_metric
+            assert "val_loss" not in first_metric
 
     print("test_run_experiment_tiny_configs passed")
 test_run_experiment_tiny_configs()

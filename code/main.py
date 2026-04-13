@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import copy
 import json
-import os
 import time
 from pathlib import Path
 
@@ -51,11 +50,14 @@ def run_experiment(config: dict, tokenizer, tokenized_data, base_save_path: str 
     min_lr_ratio = config.get("min_lr_ratio", 0.1)
     reset_scheduler_on_resume = config.get("reset_scheduler_on_resume", False)
     sample_interval = config.get("sample_interval", 100)
+    train_eval_interval = config.get("train_eval_interval", 100)
     early_stop_patience = config.get("early_stop_patience", None)
     early_stop_delta = config.get("early_stop_delta", 0.0)
 
     if sample_interval < 1:
         raise ValueError("sample_interval must be >= 1.")
+    if train_eval_interval < 1:
+        raise ValueError("train_eval_interval must be >= 1.")
     if early_stop_patience is not None and early_stop_patience < 1:
         raise ValueError("early_stop_patience must be >= 1 when enabled.")
     if early_stop_delta < 0:
@@ -74,19 +76,12 @@ def run_experiment(config: dict, tokenizer, tokenized_data, base_save_path: str 
 
     n_total = len(tokenized_data)
     if n_total == 1:
-        full_seq = tokenized_data[0]
-        split = int(0.9 * len(full_seq))
-        train_data = [full_seq[:split]]
-        val_data = [full_seq[split:]]
+        train_data = [tokenized_data[0]]
     else:
-        n_train = int(0.8 * n_total)
-        n_val = int(0.1 * n_total)
-        train_data = tokenized_data[:n_train]
-        val_data = tokenized_data[n_train:n_train + n_val]
+        train_data = tokenized_data
 
     train_tokens = sum(len(seq) for seq in train_data)
-    val_tokens = sum(len(seq) for seq in val_data)
-    print(f"Train tokens: {train_tokens}, Val tokens: {val_tokens}", flush=True)
+    print(f"Train tokens: {train_tokens}", flush=True)
 
     if len(train_data) == 0:
         raise ValueError("train_data is empty after splitting. Please provide more data or adjust the split.")
@@ -94,7 +89,6 @@ def run_experiment(config: dict, tokenizer, tokenized_data, base_save_path: str 
     # NOTE: are data items are longer by one than the sequence length,
     # They will be shortened by 1 when converted to training examples.
     data_iter = iter(data.RandomOrderDataIterator(train_data, seq_len + 1))
-    val_iter = iter(data.RandomOrderDataIterator(val_data, seq_len + 1))
 
     print("Constructing Transformer model architecture...", flush=True)
     model: torch.nn.Module = TransformerLM(
@@ -153,12 +147,10 @@ def run_experiment(config: dict, tokenizer, tokenized_data, base_save_path: str 
     model.train()
 
     train_losses = []
-    val_losses = []
-    val_steps = []
-    val_lrs = []
-    best_val_loss = float("inf")
+    train_steps = []
+    best_train_loss = float("inf")
     best_step = -1
-    prev_val_loss = None
+    prev_train_loss = None
     early_stop_counter = 0
     should_stop_early = False
     experiment_start_time = time.perf_counter()
@@ -224,87 +216,70 @@ def run_experiment(config: dict, tokenizer, tokenized_data, base_save_path: str 
                     print("Sample generation complete.", flush=True)
                     print("", flush=True)
 
-            if num_batches % config["val_interval"] == 0:
-                print("Starting validation on 50 batches...", flush=True)
-                model.eval()
-                val_loss_values = []
-                val_iter = iter(data.RandomOrderDataIterator(val_data, seq_len + 1))
-                with torch.no_grad():
-                    for val_batch_idx, val_batch in enumerate(data.batch_items(val_iter, batch_size)):
-                        if val_batch_idx >= 50:
-                            break
-                        val_x, val_y = lm.batch_to_labeled_samples(val_batch)
-                        val_x, val_y = val_x.to(device), val_y.to(device)
-                        val_logits = model(val_x)
-                        val_loss = lm.compute_loss(val_logits, val_y, pad_id=tokenizer.pad_id())
-                        val_loss_values.append(val_loss.item())
+            if num_batches % train_eval_interval == 0 or num_batches == num_batches_to_train:
+                current_train_loss = loss.item()
+                print(f"Training loss at batch {num_batches}: {current_train_loss:.4f}", flush=True)
 
-                avg_val_loss = sum(val_loss_values) / len(val_loss_values)
-                print(f"Validation loss at batch {num_batches}: {avg_val_loss:.4f}", flush=True)
-
-                if prev_val_loss is None:
+                if prev_train_loss is None:
                     print(
-                        "Validation baseline established (no previous validation point for delta comparison).",
+                        "Training-loss baseline established (no previous checkpoint for delta comparison).",
                         flush=True,
                     )
                 else:
-                    val_change = avg_val_loss - prev_val_loss
-                    if val_change < 0:
+                    train_change = current_train_loss - prev_train_loss
+                    if train_change < 0:
                         print(
-                            f"Validation improved by {abs(val_change):.6f} (prev={prev_val_loss:.4f} -> current={avg_val_loss:.4f}).",
+                            f"Training loss improved by {abs(train_change):.6f} (prev={prev_train_loss:.4f} -> current={current_train_loss:.4f}).",
                             flush=True,
                         )
-                    elif val_change > 0:
+                    elif train_change > 0:
                         print(
-                            f"Validation worsened by {val_change:.6f} (prev={prev_val_loss:.4f} -> current={avg_val_loss:.4f}).",
+                            f"Training loss worsened by {train_change:.6f} (prev={prev_train_loss:.4f} -> current={current_train_loss:.4f}).",
                             flush=True,
                         )
                     else:
                         print(
-                            f"Validation unchanged (prev={prev_val_loss:.4f} -> current={avg_val_loss:.4f}).",
+                            f"Training loss unchanged (prev={prev_train_loss:.4f} -> current={current_train_loss:.4f}).",
                             flush=True,
                         )
 
-                    if early_stop_patience is not None:
-                        best_val_before_update = best_val_loss
-                        if avg_val_loss + early_stop_delta >= best_val_before_update:
-                            early_stop_counter += 1
-                            print(
-                                f"Early-stop no-improvement streak: {early_stop_counter}/{early_stop_patience} "
-                                f"(best={best_val_before_update:.4f}, current={avg_val_loss:.4f}, "
-                                f"delta threshold={early_stop_delta:.6f}).",
-                                flush=True,
-                            )
-                        else:
-                            if early_stop_counter > 0:
-                                print("Early-stop no-improvement streak reset to 0.", flush=True)
-                            early_stop_counter = 0
+                if early_stop_patience is not None:
+                    best_train_before_update = best_train_loss
+                    if current_train_loss + early_stop_delta >= best_train_before_update:
+                        early_stop_counter += 1
+                        print(
+                            f"Early-stop no-improvement streak: {early_stop_counter}/{early_stop_patience} "
+                            f"(best={best_train_before_update:.4f}, current={current_train_loss:.4f}, "
+                            f"delta threshold={early_stop_delta:.6f}).",
+                            flush=True,
+                        )
+                    else:
+                        if early_stop_counter > 0:
+                            print("Early-stop no-improvement streak reset to 0.", flush=True)
+                        early_stop_counter = 0
 
-                        if early_stop_counter >= early_stop_patience:
-                            should_stop_early = True
-                            print(
-                                f"Early stopping triggered at batch {num_batches}. "
-                                f"Validation did not beat best loss ({best_val_before_update:.4f}) by more than "
-                                f"{early_stop_delta:.6f} for {early_stop_patience} consecutive validation checks.",
-                                flush=True,
-                            )
+                    if early_stop_counter >= early_stop_patience:
+                        should_stop_early = True
+                        print(
+                            f"Early stopping triggered at batch {num_batches}. "
+                            f"Training loss did not beat best loss ({best_train_before_update:.4f}) by more than "
+                            f"{early_stop_delta:.6f} for {early_stop_patience} consecutive checks.",
+                            flush=True,
+                        )
 
-                train_losses.append(loss.item())
-                val_losses.append(avg_val_loss)
-                val_steps.append(num_batches)
-                val_lrs.append(optimizer.param_groups[0]["lr"])
+                train_losses.append(current_train_loss)
+                train_steps.append(num_batches)
 
                 metric_record = {
                     "step": num_batches,
-                    "train_loss": loss.item(),
-                    "val_loss": avg_val_loss,
+                    "train_loss": current_train_loss,
                     "lr": optimizer.param_groups[0]["lr"],
                 }
                 with open(metrics_path, "a") as metrics_file:
                     metrics_file.write(json.dumps(metric_record) + "\n")
 
-                if avg_val_loss < best_val_loss:
-                    best_val_loss = avg_val_loss
+                if current_train_loss < best_train_loss:
+                    best_train_loss = current_train_loss
                     best_step = num_batches
                     torch.save(model.state_dict(), exp_dir / "best_model.pth")
 
@@ -314,16 +289,13 @@ def run_experiment(config: dict, tokenizer, tokenized_data, base_save_path: str 
                         "optimizer_state": optimizer.state_dict(),
                         "scheduler_state": None if scheduler is None else scheduler.state_dict(),
                         "num_batches": num_batches,
-                        "best_val_loss": best_val_loss,
+                        "best_train_loss": best_train_loss,
                         "config": config,
                     },
                     exp_dir / "last_checkpoint.pth",
                 )
 
-                model.train()
-                last_log_time = time.perf_counter()
-                last_log_batches = num_batches
-                prev_val_loss = avg_val_loss
+                prev_train_loss = current_train_loss
 
                 if should_stop_early:
                     break
@@ -339,8 +311,7 @@ def run_experiment(config: dict, tokenizer, tokenized_data, base_save_path: str 
     tokenizer.save(str(exp_dir / "tokenizer.json"))
 
     plt.figure(figsize=(8, 5))
-    plt.plot(val_steps, train_losses, label="Train Loss")
-    plt.plot(val_steps, val_losses, label="Validation Loss")
+    plt.plot(train_steps, train_losses, label="Train Loss")
     plt.xlabel("Training Steps")
     plt.ylabel("Loss")
     plt.title(f"Loss Curves: {config['exp_name']}")
@@ -351,17 +322,17 @@ def run_experiment(config: dict, tokenizer, tokenized_data, base_save_path: str 
 
     summary = {
         "exp_name": config["exp_name"],
-        "best_val_loss": best_val_loss,
+        "best_train_loss": best_train_loss,
         "best_step": best_step,
         "num_batches_trained": num_batches,
         "elapsed_sec": time.perf_counter() - experiment_start_time,
         "last_lr": optimizer.param_groups[0]["lr"],
-        "num_val_points": len(val_steps),
+        "num_train_points": len(train_steps),
     }
     with open(exp_dir / "summary.json", "w") as summary_file:
         json.dump(summary, summary_file, indent=4)
 
-    return best_val_loss
+    return best_train_loss
 
 
 if __name__ == "__main__":
@@ -386,7 +357,7 @@ if __name__ == "__main__":
         "learning_rate": 5e-4,
         "gradient_clipping": 1.0,
         "num_batches_to_train": 50000,
-        "val_interval": 100,
+        "train_eval_interval": 100,
         "with_residuals": True,
         "use_pre_norm": True,
         "init_scheme": "xavier_uniform",
@@ -431,17 +402,17 @@ if __name__ == "__main__":
     leaderboard = []
 
     for config in experiments:
-        best_val_loss = run_experiment(config, tokenizer, tokenized_data)
-        print(f"Experiment {config['exp_name']} best validation loss: {best_val_loss:.4f}", flush=True)
+        best_train_loss = run_experiment(config, tokenizer, tokenized_data)
+        print(f"Experiment {config['exp_name']} best training loss: {best_train_loss:.4f}", flush=True)
         leaderboard.append(
             {
                 "exp_name": config["exp_name"],
-                "best_val_loss": best_val_loss,
+                "best_train_loss": best_train_loss,
                 "summary_path": str(Path("experiments") / config["exp_name"] / "summary.json"),
             }
         )
         torch.cuda.empty_cache()
 
-    leaderboard = sorted(leaderboard, key=lambda x: x["best_val_loss"])
+    leaderboard = sorted(leaderboard, key=lambda x: x["best_train_loss"])
     with open(Path("experiments") / "leaderboard.json", "w") as leaderboard_file:
         json.dump(leaderboard, leaderboard_file, indent=4)
