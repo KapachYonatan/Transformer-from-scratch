@@ -4,12 +4,8 @@ Implementation of a Transformer language model from scratch as part of coursewor
 
 ## Project Structure
 
-- `code/`: Model components, training logic, and tests.
+- `code/`: Model components, training/evaluation logic, and tests.
 - `data/`: Input corpora and datasets.
-
-## Training Metric
-
-Experiments in this repository optimize and report training loss only.
 
 ## Quick Start
 
