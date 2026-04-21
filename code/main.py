@@ -26,6 +26,69 @@ def build_experiments(base_config: dict, variant_overrides: list[dict]) -> list[
         experiments.append(cfg)
     return experiments
 
+
+def load_tokenizer(tokenizer_path: str | Path) -> data.CharTokenizer:
+    return data.CharTokenizer.load(str(tokenizer_path))
+
+
+def load_model_from_files(
+    best_model_path: str | Path,
+    config_path: str | Path,
+    tokenizer: data.CharTokenizer,
+    device: torch.device | None = None,
+) -> TransformerLM:
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    with open(config_path, "r") as config_file:
+        config = json.load(config_file)
+
+    seq_len = config["seq_len"]
+    n_layers = config["n_layers"]
+    n_heads = config["n_heads"]
+    embed_size = config["embed_size"]
+    mlp_hidden_size = config.get("mlp_hidden_size", embed_size * 4)
+    with_residuals = config.get("with_residuals", True)
+    use_pre_norm = config.get("use_pre_norm", True)
+    init_scheme = config.get("init_scheme", "xavier_uniform")
+    embedding_dropout = config.get("embedding_dropout", 0.0)
+    attention_dropout = config.get("attention_dropout", 0.0)
+    self_attention_dropout = config.get("self_attention_dropout", 0.0)
+
+    model = TransformerLM(
+        n_layers=n_layers,
+        n_heads=n_heads,
+        embed_size=embed_size,
+        max_context_len=seq_len,
+        vocab_size=tokenizer.vocab_size(),
+        mlp_hidden_size=mlp_hidden_size,
+        with_residuals=with_residuals,
+        use_pre_norm=use_pre_norm,
+        init_scheme=init_scheme,
+        embedding_dropout=embedding_dropout,
+        attention_dropout=attention_dropout,
+        self_attention_dropout=self_attention_dropout,
+    ).to(device)
+
+    checkpoint = torch.load(best_model_path, map_location=device)
+    if isinstance(checkpoint, dict) and "model_state" in checkpoint:
+        checkpoint = checkpoint["model_state"]
+    model.load_state_dict(checkpoint)
+    model.eval()
+    return model
+
+
+def load_experiment_artifacts(experiment_dir: str | Path, device: torch.device | None = None):
+    experiment_dir = Path(experiment_dir)
+    tokenizer = load_tokenizer(experiment_dir / "tokenizer.json")
+    model = load_model_from_files(
+        experiment_dir / "best_model.pth",
+        experiment_dir / "config.json",
+        tokenizer,
+        device=device,
+    )
+    return model, tokenizer
+
 def run_experiment(config: dict, tokenizer, tokenized_data, base_save_path: str = "experiments"):
     seq_len = config["seq_len"]
     batch_size = config["batch_size"]
