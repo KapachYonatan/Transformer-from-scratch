@@ -82,7 +82,7 @@ def load_data(path: str) -> tuple[CharTokenizer, list[list[int]]]:
 
     for fname in file_names:
         print(f"Tokenizing file: {fname}...", flush=True)
-        with open(fname) as fh:
+        with open(fname, encoding="utf-8", errors="ignore") as fh:
             text = fh.read()
             total_characters += len(text)
             loaded_documents += 1
@@ -90,7 +90,7 @@ def load_data(path: str) -> tuple[CharTokenizer, list[list[int]]]:
 
     data: list[list[int]] = []
     for fname in file_names:
-        with open(fname) as fh:
+        with open(fname, encoding="utf-8", errors="ignore") as fh:
             text = fh.read()
             data.append(tokenizer.tokenize(text))
 
