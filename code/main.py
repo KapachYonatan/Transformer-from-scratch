@@ -114,11 +114,17 @@ def run_experiment(config: dict, tokenizer, tokenized_data, base_save_path: str 
     min_lr_ratio = config.get("min_lr_ratio", 0.1)
     reset_scheduler_on_resume = config.get("reset_scheduler_on_resume", False)
     sample_interval = config.get("sample_interval", 100)
+    sample_temperature = config.get("sample_temperature", 1.0)
+    sample_topK = config.get("sample_topK", 5)
     early_stop_patience = config.get("early_stop_patience", None)
     early_stop_delta = config.get("early_stop_delta", 0.0)
 
     if sample_interval < 1:
         raise ValueError("sample_interval must be >= 1.")
+    if sample_temperature <= 0:
+        raise ValueError("sample_temperature must be > 0.")
+    if sample_topK < 1:
+        raise ValueError("sample_topK must be >= 1.")
     if early_stop_patience is not None and early_stop_patience < 1:
         raise ValueError("early_stop_patience must be >= 1 when enabled.")
     if early_stop_delta < 0:
@@ -280,7 +286,12 @@ def run_experiment(config: dict, tokenizer, tokenized_data, base_save_path: str 
                     for _ in range(1):
                         model.eval()
                         sampled = tokenizer.detokenize(
-                            model.sample_continuation(tokenizer.tokenize("Hello"), 500)
+                            model.better_sample_continuation(
+                                tokenizer.tokenize("Hello"),
+                                500,
+                                temperature=sample_temperature,
+                                topK=sample_topK,
+                            )
                         )
                         model.train()
                         print(f"Model sample: '''{sampled}'''", flush=True)
@@ -459,6 +470,8 @@ if __name__ == "__main__":
         "self_attention_dropout": 0.0,
         "scheduler_type": "none",
         "sample_interval": 100,
+        "sample_temperature": 1.0,
+        "sample_topK": 5,
         "early_stop_patience": None,
         "early_stop_delta": 0.0,
     }
